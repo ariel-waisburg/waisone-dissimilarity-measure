@@ -1,0 +1,120 @@
+Librerias
+```{r}
+library(dplyr)
+library(readr)
+```
+
+Funciones
+```{r}
+calculate_disimil <- function(df, wgts, i, j, n, p, ranges, var_types, is_waisone = FALSE, waisone_cat_list = list()) {
+  
+  if (i < 1 || i > n || j < 1 || j > n) {
+    stop("Invalid row indices for i and/or j")
+  }
+  if (length(wgts) != p) {
+    stop("Length of 'wgts' must match the number of columns in 'df'.")
+  }
+  
+  sum <- 0
+  
+  for (k in seq_along(wgts)) {
+    disimil_var <- 0
+    if (var_types[[k]] != "numeric") {
+      if (is_waisone && nlevels(factor(df[,k, drop = TRUE])) > 2) {
+        if (df[i, k] != df[j, k]) {
+          list_index <- which(sapply(waisone_cat_list, function(x) x$col_index == k))
+          cat_rank = waisone_cat_list[[list_index]]$rank_cat
+          cat_i_value <- cat_rank[cat_rank[, 1] == df[i, k, drop = TRUE], 2, drop = TRUE]
+          cat_j_value <- cat_rank[cat_rank[, 1] == df[j, k, drop = TRUE], 2, drop = TRUE]
+          disimil_var <- as.numeric(abs(cat_i_value - cat_j_value) / waisone_cat_list[[list_index]]$range_cat)
+        }
+      } else {
+        disimil_var <- as.numeric(df[i, k] != df[j, k])
+      }
+    } else {
+      disimil_var <- as.numeric(abs(df[i, k] - df[j, k]) / ranges[[k]])
+    }
+    var <- disimil_var * wgts[k]
+    sum <- sum + var
+  }
+  
+  distance <- sum / sum(wgts)
+  
+  return(distance)
+}
+
+get_rank_cat_maha <- function(maha_cat, index_cat) {
+  rank_cat_maha <- maha_cat %>%
+    group_by(across(1 + index_cat)) %>% 
+    summarise(mean = mean(maha))
+  
+  return(rank_cat_maha)
+}
+
+generate_matrix_disimil <- function(df, wgts, isWaisone = FALSE) {
+  n <- nrow(df)
+  p <- ncol(df)
+  DIST <- matrix(0, nrow = n, ncol = n)
+  ranges <- sapply(df, function(x) if (is.numeric(x)) diff(range(x)) else NA)
+  var_types <- sapply(df, class)
+  
+  if (isWaisone) {
+    df_num <- df[, sapply(df, is.numeric)]
+    df_num_scaled <- scale(df_num)
+    
+    df_cat <- df[,sapply(df, function(i) class(i) != "numeric" && nlevels(factor(i)) > 2)]
+    p_cat <- ncol(df_cat)
+    
+    maha = sqrt(mahalanobis(df_num_scaled,
+                                center = colMeans(df_num_scaled),
+                                cov = cov(df_num_scaled)))
+    
+    maha_cat <- cbind(maha, df_cat)
+    
+    cat_list <- list()
+    for (i in 1:p_cat) {
+      rank_cat <- get_rank_cat_maha(maha_cat, i)
+      cat_list[[i]] <- list(
+        col_index = which(colnames(df) == colnames(rank_cat)[1]),
+        rank_cat = rank_cat,
+        range_cat = diff(range(rank_cat[,2])))
+    }
+  }
+
+  for (i in 1:(n - 1)) {
+    for (j in (i + 1):n) {
+      if (i != j) {
+        distance_ij <- ifelse(isWaisone,
+                              calculate_disimil(df, wgts, i, j, n, p, ranges, var_types, TRUE, cat_list),
+                              calculate_disimil(df, wgts, i, j, n, p, ranges, var_types))
+        DIST[i, j] = distance_ij
+        DIST[j, i] <- distance_ij
+      }
+    }
+  }
+  
+  return(DIST)
+}
+```
+
+Ejecucion
+```{r}
+churn_mini <- read_csv("5_medidas_disimilaridad/churn_mini.csv")
+churn_mini <- churn_mini[,-1]
+View(churn_mini)
+
+delta_gower <- generate_matrix_disimil(churn_mini, c(1,1,1,1,1,1,1))
+delta_waisone <- generate_matrix_disimil(churn_mini, c(1,1,1,1,1,1,1), isWaisone = TRUE)
+```
+
+Visualizacion
+```{r}
+mds_gower <- cmdscale(as.dist(delta_gower))
+
+plot(mds_gower, pch = 20, type = 'n')
+text(mds_gower, rownames(churn_mini), col = as.numeric(factor(churn_mini$Geography)))
+
+plot(cmdscale(as.dist(delta_waisone)), pch = 20, type = 'n')
+text(mds_gower, rownames(churn_mini), col = as.numeric(factor(churn_mini$Geography)))
+```
+
